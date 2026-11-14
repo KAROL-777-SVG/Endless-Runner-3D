@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Endless Runner 3D</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { overflow:hidden; background:#000; font-family:'Segoe UI',sans-serif; }
+  #game { width:100vw; height:100vh; display:block; }
+  #hud {
+    position:fixed; top:15px; left:15px; right:15px; z-index:10;
+    display:flex; justify-content:space-between;
+    color:#0ff; font-size:20px; text-shadow:0 0 10px #0ff; pointer-events:none;
+  }
+  #overlay {
+    position:fixed; inset:0; background:rgba(0,0,0,0.85);
+    display:flex; flex-direction:column; justify-content:center; align-items:center;
+    z-index:100; color:#fff; text-align:center;
+  }
+  #overlay h1 { font-size:48px; color:#0ff; text-shadow:0 0 20px #0ff; margin-bottom:20px; }
+  #overlay p { font-size:18px; margin-bottom:30px; color:#aaa; }
+  #overlay button {
+    padding:15px 50px; font-size:20px; background:linear-gradient(90deg,#0ff,#f0f);
+    border:none; border-radius:30px; color:#000; font-weight:bold; cursor:pointer;
+  }
+  .hidden { display:none !important; }
+  #mobileCtrl {
+    position:fixed; bottom:20px; left:0; right:0; display:flex; justify-content:space-around; z-index:10;
+  }
+  .mbtn {
+    width:90px; height:90px; border-radius:50%;
+    background:rgba(0,255,255,0.15); border:2px solid #0ff;
+    color:#0ff; font-size:32px; font-weight:bold; touch-action:none;
+  }
+  .mbtn:active { background:rgba(0,255,255,0.5); }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hud">
+  <div>🪙 <span id="coins">0</span></div>
+  <div>📏 <span id="dist">0</span>m</div>
+  <div>🏆 <span id="best">0</span>m</div>
+</div>
+<div id="mobileCtrl">
+  <button class="mbtn" id="btnL">◀</button>
+  <button class="mbtn" id="btnJ">⬆</button>
+  <button class="mbtn" id="btnR">▶</button>
+</div>
+<div id="overlay">
+  <h1>ENDLESS RUNNER 3D</h1>
+  <p>◀ ▶ — yo'l almashtirish &nbsp;|&nbsp; ⬆ / SPACE — sakrash</p>
+  <button id="startBtn">START RUN</button>
+</div>
+
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+const canvas = document.getElementById('game');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias:true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled = true;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x080818);
+scene.fog = new THREE.Fog(0x080818, 30, 100);
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth/innerHeight, 0.1, 500);
+camera.position.set(0, 6, 8);
+camera.lookAt(0, 1, -10);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+const dir = new THREE.DirectionalLight(0xffffff, 1);
+dir.position.set(5, 15, 5);
+dir.castShadow = true;
+scene.add(dir);
+const neon = new THREE.PointLight(0x00ffff, 2, 30);
+neon.position.set(0, 8, 0);
+scene.add(neon);
+
+// lane setup
+const LANES = [-2.5, 0, 2.5];
+const state = {
+  running: false,
+  lane: 1,
+  targetLane: 1,
+  jumping: false,
+  jumpV: 0,
+  y: 0,
+  speed: 0.4,
+  distance: 0,
+  coins: 0,
+  best: parseInt(localStorage.getItem('runnerBest') || '0'),
+  obstacles: [],
+  coinObjs: [],
+  lastObstacleZ: -20,
+  lastCoinZ: -20,
+};
+
+// player
+const player = new THREE.Group();
+const bodyMat = new THREE.MeshStandardMaterial({ color:0x00ffff, emissive:0x004466, metalness:0.5, roughness:0.3 });
+const body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.6), bodyMat);
+body.position.y = 0.7; body.castShadow = true;
+player.add(body);
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 16,16), new THREE.MeshStandardMaterial({ color:0xffccaa }));
+head.position.y = 1.7; head.castShadow = true;
+player.add(head);
+player.position.set(0, 0, 0);
+scene.add(player);
+
+// ground
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(20, 300),
+  new THREE.MeshStandardMaterial({ color:0x151525, metalness:0.5, roughness:0.5 })
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.z = -100;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// lane markers
+for (let l = 0; l < 2; l++) {
+  const x = (LANES[l] + LANES[l+1]) / 2;
+  for (let z = 0; z > -300; z -= 4) {
+    const mark = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.1, 2),
+      new THREE.MeshBasicMaterial({ color:0x00ffff, transparent:true, opacity:0.5 })
+    );
+    mark.rotation.x = -Math.PI/2;
+    mark.position.set(x, 0.01, z);
+    scene.add(mark);
+  }
+}
+
+// side walls (neon)
+[-10, 10].forEach(x => {
+  const wall = new THREE.Mesh(
+    new THREE.BoxGeometry(0.3, 3, 300),
+    new THREE.MeshStandardMaterial({ color:0xff00ff, emissive:0xff00ff, emissiveIntensity:0.5 })
+  );
+  wall.position.set(x, 1.5, -100);
+  scene.add(wall);
+});
+
+// obstacle factory
+function spawnObstacle(z) {
+  const lane = Math.floor(Math.random()*3);
+  const ob = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 1.8, 1.2),
+    new THREE.MeshStandardMaterial({ color:0xff3333, emissive:0x660000 })
+  );
+  ob.position.set(LANES[lane], 0.9, z);
+  ob.castShadow = true;
+  ob.userData = { lane };
+  scene.add(ob);
+  state.obstacles.push(ob);
+}
+
+function spawnCoin(z) {
+  const lane = Math.floor(Math.random()*3);
+  const c = new THREE.Mesh(
+    new THREE.TorusGeometry(0.3, 0.12, 8, 16),
+    new THREE.MeshStandardMaterial({ color:0xffcc00, emissive:0xffaa00, metalness:1, roughness:0.2 })
+  );
+  c.position.set(LANES[lane], 1, z);
+  scene.add(c);
+  state.coinObjs.push(c);
+}
+
+// input
+const keys = {};
+addEventListener('keydown', e => {
+  keys[e.code] = true;
+  if (e.code==='ArrowLeft' || e.code==='KeyA') moveLane(-1);
+  if (e.code==='ArrowRight'|| e.code==='KeyD') moveLane(1);
+  if (e.code==='Space'|| e.code==='ArrowUp'|| e.code==='KeyW') jump();
+});
+function moveLane(d) {
+  state.targetLane = Math.max(0, Math.min(2, state.targetLane + d));
+}
+function jump() {
+  if (!state.jumping && state.running) {
+    state.jumping = true;
+    state.jumpV = 0.22;
+  }
+}
+
+// mobile buttons
+document.getElementById('btnL').addEventListener('touchstart', e=>{e.preventDefault(); moveLane(-1);});
+document.getElementById('btnR').addEventListener('touchstart', e=>{e.preventDefault(); moveLane(1);});
+document.getElementById('btnJ').addEventListener('touchstart', e=>{e.preventDefault(); jump();});
+document.getElementById('btnL').addEventListener('click', ()=>moveLane(-1));
+document.getElementById('btnR').addEventListener('click', ()=>moveLane(1));
+document.getElementById('btnJ').addEventListener('click', jump);
+
+// game loop
+const clock = new THREE.Clock();
+function update(dt) {
+  if (!state.running) return;
+
+  // move lane smoothly
+  state.lane += (state.targetLane - state.lane) * 0.2;
+  player.position.x = LANES[Math.round(state.lane)] !== undefined ? 
+    THREE.MathUtils.lerp(player.position.x, LANES[state.targetLane], 0.2) : player.position.x;
+
+  // jump physics
+  if (state.jumping) {
+    state.y += state.jumpV;
+    state.jumpV -= 0.012;
+    if (state.y <= 0) { state.y = 0; state.jumping = false; state.jumpV = 0; }
+  }
+  player.position.y = state.y;
+
+  // advance
+  state.distance += state.speed * dt * 30;
+  state.speed = Math.min(0.9, 0.4 + state.distance/3000);
+
+  // spawn
+  state.lastObstacleZ += state.speed * dt * 30;
+  if (state.lastObstacleZ > 8) {
+    spawnObstacle(-80);
+    state.lastObstacleZ = 0;
+  }
+  state.lastCoinZ += state.speed * dt * 30;
+  if (state.lastCoinZ > 6) {
+    spawnCoin(-80);
+    state.lastCoinZ = 0;
+  }
+
+  // move obstacles & coins
+  for (let i = state.obstacles.length-1; i >= 0; i--) {
+    const ob = state.obstacles[i];
+    ob.position.z += state.speed * dt * 30;
+    if (ob.position.z > 10) {
+      scene.remove(ob);
+      state.obstacles.splice(i,1);
+      continue;
+    }
+    // collision
+    if (Math.abs(ob.position.z - player.position.z) < 1.2 &&
+        Math.abs(ob.position.x - player.position.x) < 1.0 &&
+        state.y < 1.5) {
+      gameOver();
+    }
+  }
+
+  for (let i = state.coinObjs.length-1; i >= 0; i--) {
+    const c = state.coinObjs[i];
+    c.position.z += state.speed * dt * 30;
+    c.rotation.y += 0.1;
+    if (c.position.z > 10) {
+      scene.remove(c);
+      state.coinObjs.splice(i,1);
+      continue;
+    }
+    if (Math.abs(c.position.z - player.position.z) < 1.2 &&
+        Math.abs(c.position.x - player.position.x) < 1.0 &&
+        Math.abs(state.y - 1) < 1.5) {
+      state.coins++;
+      scene.remove(c);
+      state.coinObjs.splice(i,1);
+    }
+  }
+
+  // camera
+  camera.position.x += (player.position.x*0.5 - camera.position.x) * 0.1;
+  camera.position.y = 6 + state.y*0.5;
+  camera.lookAt(player.position.x*0.3, 1, -10);
+
+  neon.position.set(player.position.x, 8, 0);
+
+  // HUD
+  document.getElementById('coins').textContent = state.coins;
+  document.getElementById('dist').textContent = Math.floor(state.distance);
+  document.getElementById('best').textContent = state.best;
+}
+
+function gameOver() {
+  state.running = false;
+  if (state.distance > state.best) {
+    state.best = Math.floor(state.distance);
+    localStorage.setItem('runnerBest', state.best);
+  }
+  const overlay = document.getElementById('overlay');
+  overlay.classList.remove('hidden');
+  overlay.innerHTML = `
+    <h1>GAME OVER</h1>
+    <p>Masofa: ${Math.floor(state.distance)}m | Tanga: ${state.coins} | Rekord: ${state.best}m</p>
+    <button id="restartBtn">QAYTA O'YNASH</button>
+  `;
+  document.getElementById('restartBtn').addEventListener('click', ()=>location.reload());
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  update(Math.min(clock.getDelta(), 0.05));
+  renderer.render(scene, camera);
+}
+animate();
+
+document.getElementById('startBtn').addEventListener('click', () => {
+  document.getElementById('overlay').classList.add('hidden');
+  state.running = true;
+  state.startTime = performance.now();
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
